@@ -4,6 +4,7 @@ const request = require("request-promise-native");
 import { Connection, Messages, SfdxError } from "@salesforce/core";
 import { SFPowerkit, LoggerLevel } from "../../../../sfpowerkit";
 import SFPowerkitCommand from "../../../../sfpowerkitCommand";
+import QueryExecutor from "../../../../utils/queryExecutor";
 
 // Initialize Messages with the current plugin directory
 Messages.importMessagesDirectory(__dirname);
@@ -17,7 +18,9 @@ export default class Refresh extends SFPowerkitCommand {
 
   public static examples = [
     `$ sfdx sfpowerkit:org:sandbox:refresh -n test2 -f sitSandbox -v myOrg@example.com`,
-    `$ sfdx sfpowerkit:org:sandbox:refresh -n test2 -l DEVELOPER -v myOrg@example.com`
+    `$ sfdx sfpowerkit:org:sandbox:refresh -n test2 -l DEVELOPER -v myOrg@example.com`,
+    `$ sfdx sfpowerkit:org:sandbox:refresh -d Testsandbox -n test2 -f sitSandbox -v myOrg@example.com`,
+    `$ sfdx sfpowerkit:org:sandbox:refresh -d Testsandbox -n test2 -l DEVELOPER -v myOrg@example.com`
   ];
 
   protected static flagsConfig = {
@@ -30,13 +33,20 @@ export default class Refresh extends SFPowerkitCommand {
       required: false,
       char: "f",
       default: "",
-      description: messages.getMessage("cloneFromFlagDescripton")
+      description: messages.getMessage("cloneFromFlagDescripton"),
+      exclusive:['licensetype']
+    }), 
+    description: flags.string({
+      required: false,
+      char: "d",
+      description: messages.getMessage("descriptionFlagDescription")
     }),
     licensetype: flags.string({
       required: false,
       char: "l",
       options: ["DEVELOPER", "DEVELOPER_PRO", "PARTIAL", "FULL"],
-      description: messages.getMessage("licenseFlagDescription")
+      description: messages.getMessage("licenseFlagDescription"),
+      exclusive:['clonefrom']
     })
   };
 
@@ -54,81 +64,74 @@ export default class Refresh extends SFPowerkitCommand {
       this.flags.apiversion || (await conn.retrieveMaxApiVersion());
 
     let result;
-
-    const sandboxId = await this.getSandboxId(conn, this.flags.name);
+    let [sandboxId, sandboxDescription] = await this.getSandboxDetails(conn, this.flags.name);
     const uri = `${conn.instanceUrl}/services/data/v${this.flags.apiversion}/tooling/sobjects/SandboxInfo/${sandboxId}/`;
 
+
+    //Both flags are exclusive, so only one gets triggered
+    let request;
     if (this.flags.clonefrom) {
-      const sourceSandboxId = await this.getSandboxId(
+      const sourceSandboxId = await this.getSandboxDetails(
         conn,
         this.flags.clonefrom
       );
-
-      result = await request({
-        method: "patch",
-        url: uri,
-        headers: {
-          Authorization: `Bearer ${conn.accessToken}`
-        },
-        body: {
-          AutoActivate: "true",
-          SourceId: `${sourceSandboxId}`
-        },
-        json: true
-      });
-    } else {
-      if (!this.flags.licensetype) {
-        throw new SfdxError(
-          "License type is required when clonefrom source org is not provided. you may need to provide -l | --licensetype"
-        );
-      }
-
-      result = await request({
-        method: "patch",
-        url: uri,
-        headers: {
-          Authorization: `Bearer ${conn.accessToken}`
-        },
-        body: {
-          AutoActivate: "true",
-          LicenseType: `${this.flags.licensetype}`
-        },
-        json: true
-      });
+      request=this.buildRefreshRequest(this.flags.description?this.flags.description:sandboxDescription,null,sourceSandboxId);
     }
-
+    if (this.flags.licensetype) {
+      request=this.buildRefreshRequest(this.flags.description?this.flags.description:sandboxDescription,this.flags.licensetype,null);
+    }
+    
+   //TODO: Add Polling 
+   let result=await request(request);
     SFPowerkit.log(
       `Successfully Enqueued Refresh of Sandbox`,
       LoggerLevel.INFO
     );
-
     return result;
   }
 
-  public async getSandboxId(conn: Connection, name: string) {
-    const query_uri = `${conn.instanceUrl}/services/data/v${this.flags.apiversion}/tooling/query?q=SELECT+Id,SandboxName+FROM+SandboxInfo+WHERE+SandboxName+in+('${name}')`;
-
-    const sandbox_query_result = await request({
-      method: "get",
-      url: query_uri,
+  public buildRefreshRequest(description:string,licenseType?:string,sourceSandboxId?:string)
+  {
+    let request = {
+      method: "patch",
+      url: uri,
       headers: {
         Authorization: `Bearer ${conn.accessToken}`
       },
+      body: {
+        AutoActivate: "true",
+        Description: description
+      },
       json: true
-    });
+    }
+    if(licenseType)
+      request.body.LicenseType=licenseType;
+     else
+     request.body.SourceId=sourceSandboxId;
+    
+     
+    
+    return request;
+  }
 
-    if (sandbox_query_result.records[0] == undefined)
-      throw new SfdxError(
-        `Unable to continue, Please check your sandbox name: ${name}`
+  public async getSandboxDetails(conn: Connection, name: string) {
+    let queryUtil = new QueryExecutor(conn);
+    const query = `SELECT Id, Description FROM SandboxInfo WHERE SandboxName in ('${name}')`;
+    let sandbox_query_result = await queryUtil.executeQuery(query, true);
+
+   if (sandbox_query_result[0] == undefined)
+     throw new SfdxError(
+       `Unable to continue, Please check your sandbox name: ${name}`
       );
 
     this.ux.log();
 
     SFPowerkit.log(
-      `Fetched Sandbox Id for sandbox  ${name}  is ${sandbox_query_result.records[0].Id}`,
+      `Fetched Sandbox Id, Description for sandbox  ${name}  is ${sandbox_query_result[0].Id}, ${sandbox_query_result[0].Description}`,
       LoggerLevel.INFO
     );
 
-    return sandbox_query_result.records[0].Id;
+    return [sandbox_query_result[0].Id, sandbox_query_result[0].Description];
   }
+
 }
