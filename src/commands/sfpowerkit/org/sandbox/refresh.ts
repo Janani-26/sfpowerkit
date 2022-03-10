@@ -33,7 +33,8 @@ export default class Refresh extends SFPowerkitCommand {
       required: false,
       char: "f",
       default: "",
-      description: messages.getMessage("cloneFromFlagDescripton")
+      description: messages.getMessage("cloneFromFlagDescripton"),
+      exclusive:['licensetype']
     }), 
     description: flags.string({
       required: false,
@@ -44,7 +45,8 @@ export default class Refresh extends SFPowerkitCommand {
       required: false,
       char: "l",
       options: ["DEVELOPER", "DEVELOPER_PRO", "PARTIAL", "FULL"],
-      description: messages.getMessage("licenseFlagDescription")
+      description: messages.getMessage("licenseFlagDescription"),
+      exclusive:['clonefrom']
     })
   };
 
@@ -65,54 +67,51 @@ export default class Refresh extends SFPowerkitCommand {
     let [sandboxId, sandboxDescription] = await this.getSandboxDetails(conn, this.flags.name);
     const uri = `${conn.instanceUrl}/services/data/v${this.flags.apiversion}/tooling/sobjects/SandboxInfo/${sandboxId}/`;
 
+
+    //Both flags are exclusive, so only one gets triggered
+    let request;
     if (this.flags.clonefrom) {
       const sourceSandboxId = await this.getSandboxDetails(
         conn,
         this.flags.clonefrom
       );
+      request=this.buildRefreshRequest(this.flags.description?this.flags.description:sandboxDescription,null,sourceSandboxId);
+    }
+    if (this.flags.licensetype) {
+      request=this.buildRefreshRequest(this.flags.description?this.flags.description:sandboxDescription,this.flags.licensetype,null);
+    }
     
-        result = await request({
-          method: "patch",
-          url: uri,
-          headers: {
-            Authorization: `Bearer ${conn.accessToken}`
-          },
-          body: {
-            AutoActivate: "true",
-            SourceId: `${sourceSandboxId}`,
-            Description: this.flags.description?`${this.flags.description}`: `${sandboxDescription}`
-          },
-          json: true
-        });   
-      
-    } else {
-      if (!this.flags.licensetype) {
-        throw new SfdxError(
-          "License type is required when clonefrom source org is not provided. you may need to provide -l | --licensetype"
-        );
-      }
-        result = await request({
-          method: "patch",
-          url: uri,
-          headers: {
-            Authorization: `Bearer ${conn.accessToken}`
-          },
-          body: {
-            AutoActivate: "true",
-            LicenseType: `${this.flags.licensetype}`,
-            Description: this.flags.description?`${this.flags.description}`: `${sandboxDescription}`
-          },
-          json: true
-        });
-      }
-      
-
+   //TODO: Add Polling 
+   let result=await request(request);
     SFPowerkit.log(
       `Successfully Enqueued Refresh of Sandbox`,
       LoggerLevel.INFO
     );
-
     return result;
+  }
+
+  public buildRefreshRequest(description:string,licenseType?:string,sourceSandboxId?:string)
+  {
+    let request = {
+      method: "patch",
+      url: uri,
+      headers: {
+        Authorization: `Bearer ${conn.accessToken}`
+      },
+      body: {
+        AutoActivate: "true",
+        Description: description
+      },
+      json: true
+    }
+    if(licenseType)
+      request.body.LicenseType=licenseType;
+     else
+     request.body.SourceId=sourceSandboxId;
+    
+     
+    
+    return request;
   }
 
   public async getSandboxDetails(conn: Connection, name: string) {
